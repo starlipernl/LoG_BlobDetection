@@ -1,111 +1,77 @@
-from skimage import io, color, img_as_float, draw, transform as tran
+"""""
+# Nathan Starliper
+# ECE 558 Final Project
+Scale invariant blob detection using LoG - This code detects SIFT blobs in a fast efficient manner using
+the laplacian of gaussian of an image pyramid to detect blobs at varying scales
+"""
+
+from skimage import io, color, img_as_float, transform as tran
 from math import sqrt, log
 import numpy as np
 import matplotlib.pyplot as plt
-import cv2
+import time
+import warnings
+
+warnings.simplefilter('ignore')
 
 
-# blog detection function
-def blob_detect(image, sigma_min, sigma_max, ratio, thresh=0.05):
+# Fastest and main implementation using LoG and image scaling with constant filter size
+def blob_detect(image, sigma_min, sigma_max, scale, thresh):
+    # convert image to grayscale float [0,1]
+    img = color.rgb2gray(image)
+    img = img_as_float(img)
+    # integer number of scales between minimum and maximum sigma based on scale ratio
+    k = int(log(float(sigma_max) / sigma_min, scale)) + 1
+    scale_init = 1
+    size_init = np.shape(img)
+    # list of sigma scales
+    sigmas = np.array([sigma_min * (scale ** i) for i in range(k + 1)])
+    # create the image pyramid scale space resizing images
+    scale_space = []
+    for i in range(k+1):
+        scale_space.append(tran.rescale(img, 1 / (scale_init * scale ** i), order=3, clip=False))
+    # filter scaled images using LoG filter
+    imgs_filtered = [log_filter(img, sigma_min) for img in scale_space]
+    # rescale images to original scale
+    imgs_rescale = []
+    for i in range(k+1):
+        imgs_rescale.append(tran.resize(imgs_filtered[i], size_init, order=3, clip=False))
+    img_pyramid = np.stack(imgs_rescale, axis=-1) ** 2
+    max_image = []
+    # max filter images within scales with 3x3 filter
+    for img_slice in range(k+1):
+        max_image.append(max_filter(img_pyramid[:, :, img_slice], 3))
+    max_image = np.stack(max_image, axis=-1)
+    max_space = np.zeros_like(max_image)
+    # max filter across scales with depth of 3
+    for ii in range(k+1):
+        max_space[:, :, ii] = np.amax(max_image[:, :, max(ii-1, 0):min(ii+1, k)], axis=-1)
+    # mask scale space with max space and find coordinates of each blob
+    max_space *= img_pyramid == max_space
+    (cy, cx, sig) = np.where(max_space >= thresh)
+    # convert coordinate of 3rd dimension to corresponding sigma value
+    for i in range(len(sig)):
+        sig[i] = sigmas[sig[i]]
+    return cy, cx, sig
+
+
+# blog detection function DoG approach, scaling filter
+def blob_detect_slow(image, sigma_min, sigma_max, ratio, thresh):
     img = color.rgb2gray(image)
     img = img_as_float(img)
     k = int(log(float(sigma_max) / sigma_min, ratio)) + 1
     sigmas = np.array([sigma_min * (ratio ** i) for i in range(k + 1)])
-    imgs_filtered = [gauss_filter(img, sigma) for sigma in sigmas]
-    imgs_dog = [(imgs_filtered[i] - imgs_filtered[i + 1]) for i in range(k)]
-    # imgs_dog = [laplace_filter(imgs_filtered[i]) * sigmas[i] ** 2 for i in range(k)]
-    img_pyramid = np.stack(imgs_dog, axis=-1) ** 2
-    mask = np.zeros_like(img_pyramid)
+    imgs_filtered = [log_filter(img, sigma) for sigma in sigmas]
+    img_pyramid = np.stack(imgs_filtered, axis=-1) ** 2
     max_image = []
     for img_slice in range(img_pyramid.shape[-1]):
         max_image.append(max_filter(img_pyramid[:, :, img_slice], 3))
     max_image = np.stack(max_image, axis=-1)
-    # mask[:, :, img_slice] = img_pyramid[:, :, img_slice] == max_image[img_slice]
     max_space = np.zeros_like(max_image)
     for ii in range(k):
         max_space[:, :, ii] = np.amax(max_image[:, :, max(ii-1, 0):min(ii+1, k)], axis=-1)
     mask = img_pyramid == max_space
     img_mask = mask & (img_pyramid > thresh)
-    (cy, cx, sig) = np.nonzero(img_mask)
-    for i in range(len(sig)):
-        sig[i] = sigmas[sig[i]]
-    return cy, cx, sig
-
-
-def blob_detect_fast(image, sigma_min, sigma_max, scale, thresh=0.05):
-    img = color.rgb2gray(image)
-    img = img_as_float(img)
-    k = int(log(float(sigma_max) / sigma_min, scale)) + 1
-    scale_init = 1
-    size_init = np.shape(img)
-    scale_space = []
-    sigmas = np.array([sigma_min * (scale ** i) for i in range(k + 1)])
-    for i in range(k+1):
-        scale_space.append(tran.rescale(img, 1 / (scale_init * scale ** i), anti_aliasing=True))
-
-        # scale_space.append(cv2.resize(img, None, fx=1/(scale_init * scale ** i), fy=1/(scale_init * scale ** i), interpolation=cv2.INTER_AREA))
-    imgs_filtered = [gauss_filter(img, sigma_min) for img in scale_space]
-    imgs_log = []
-    imgs_rescale = []
-    for i in range(k+1):
-        imgs_log.append(laplace_filter(imgs_filtered[i], sigma_min * scale ** i))
-        imgs_rescale.append(tran.resize(imgs_log[i], size_init))
-        # imgs_rescale.append(cv2.resize(imgs_log[i], (size_init[1], size_init[0]), interpolation=cv2.INTER_CUBIC))
-    # imgs_dog = [(imgs_filtered[i] - imgs_filtered[i + 1]) for i in range(k)]
-    # imgs_dog = [laplace_filter(imgs_filtered[i]) * sigma_min[i] ** 2 for i in range(k)]
-    img_pyramid = np.stack(imgs_rescale, axis=-1) ** 2
-    max_image = []
-    for img_slice in range(k+1):
-        max_image.append(max_filter(img_pyramid[:, :, img_slice], 3))
-    max_image = np.stack(max_image, axis=-1)
-    # mask[:, :, img_slice] = img_pyramid[:, :, img_slice] == max_image[img_slice]
-    max_space = np.zeros_like(max_image)
-    for ii in range(k+1):
-        max_space[:, :, ii] = np.amax(max_image[:, :, max(ii-1, 0):min(ii+1, k)], axis=-1)
-    mask = img_pyramid == max_image
-    img_mask = mask & (img_pyramid > thresh)
-    img_mask[0,:,:] = 0
-    img_mask[-1,:,:] = 0
-    img_mask[:,0,:] = 0
-    img_mask[:,-1,:] = 0
-    (cy, cx, sig) = np.nonzero(img_mask)
-    for i in range(len(sig)):
-        sig[i] = sigmas[sig[i]]
-    return cy, cx, sig
-
-
-def blob_detect_log(image, sigma_min, sigma_max, scale, thresh=0.05):
-    img = color.rgb2gray(image)
-    img = img_as_float(img)
-    k = int(log(float(sigma_max) / sigma_min, scale)) + 1
-    scale_init = 1
-    size_init = np.shape(img)
-    scale_space = []
-    sigmas = np.array([sigma_min * (scale ** i) for i in range(k + 1)])
-    for i in range(k+1):
-        # scale_space.append(tran.rescale(img, 1 / (scale_init * scale ** i), anti_aliasing=True))
-
-        scale_space.append(cv2.resize(img, None, fx=1/(scale_init * scale ** i), fy=1/(scale_init * scale ** i), interpolation=cv2.INTER_AREA))
-    imgs_filtered = [log_filter(img, sigma_min) for img in scale_space]
-    imgs_rescale = []
-    for i in range(k+1):
-        # imgs_rescale.append(tran.resize(imgs_filtered[i], size_init))
-        imgs_rescale.append(cv2.resize(imgs_filtered[i], (size_init[1], size_init[0]), interpolation=cv2.INTER_CUBIC))
-    img_pyramid = np.stack(imgs_rescale, axis=-1) ** 2
-    max_image = []
-    for img_slice in range(k+1):
-        max_image.append(max_filter(img_pyramid[:, :, img_slice], 3))
-    max_image = np.stack(max_image, axis=-1)
-    # mask[:, :, img_slice] = img_pyramid[:, :, img_slice] == max_image[img_slice]
-    max_space = np.zeros_like(max_image)
-    for ii in range(k+1):
-        max_space[:, :, ii] = np.amax(max_image[:, :, max(ii-1, 0):min(ii+1, k)], axis=-1)
-    mask = img_pyramid == max_image
-    img_mask = mask & (img_pyramid > thresh)
-    img_mask[0,:,:] = 0
-    img_mask[-1,:,:] = 0
-    img_mask[:,0,:] = 0
-    img_mask[:,-1,:] = 0
     (cy, cx, sig) = np.nonzero(img_mask)
     for i in range(len(sig)):
         sig[i] = sigmas[sig[i]]
@@ -121,6 +87,7 @@ def gauss_filter(image, sigma):
     hsum = h.sum()
     if hsum != 0:
         h /= hsum
+    # filter image using gaussian filter h
     img_filtered = conv2d(image, h, 'same', 'zero')
     return img_filtered
 
@@ -136,10 +103,12 @@ def log_filter(image, sigma):
     hsum = h.sum()
     if hsum != 0:
         h /= hsum
+    # laplacian of gaussian
     h1 = h * (x*x + y*y - 2*std)/(std ** 2)
     h1sum = h1.sum()
-    h_log = h1 - h1sum/size2
-    img_filtered = conv2d(image, h_log, 'same', 'zero')
+    h_log = std * (h1 - h1sum/size2)
+    # filter image
+    img_filtered = conv2d(image, h_log, 'same', 'copy')
     return img_filtered
 
 
@@ -198,19 +167,6 @@ def conv2d(img, kern, opt_shape, opt_pad):
         img_new = img_new[pad:-pad, pad:-pad]
     elif opt_shape == 'valid':
         img_new = img_pad[pad+1:-(pad+1), pad+1:-(pad+1)]
-    # img_new = np.zeros_like(img)
-    # img_new = np.zeros_like(img)
-    # for row in range(0, h + 1):
-    #     for col in range(0, w + 1):
-    #         s2 = - min(-1, h - row - pad)
-    #         value = kern * img[max(0, row - pad) : min(row + pad + 1, h + 1), max(0, col - pad):min(col + pad + 1, w + 1)]
-    #         img_new[row, col] = min(1, max(0, value.sum()))
-    return img_new
-
-
-def laplace_filter(img, scale):
-    kern = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
-    img_new = conv2d(img, kern, 'same', 'zero')
     return img_new
 
 
@@ -227,32 +183,25 @@ def max_filter(image, size):
 
 
 if __name__ == '__main__':
-    file = 'TestImages4Project/butterfly.jpg'
+    # load images and initialize parameters
+    file = 'butterfly.jpg'
     image = io.imread(file)
-    # image = color.gray2rgb(image)
     sigma_min = 2
-    sigma_max = 30
-    ratio = 1.4788  # 10 scales, DoG ratio should be between sqrt(2) and 1.6
-    thresh = 0.001
-    scale = ratio
-    (cy, cx, sig) = blob_detect_log(image, sigma_min, sigma_max, ratio, thresh)
-    # image_gray = color.rgb2gray(image)
-    # indices = blob_dog(image_gray, sigma_min, sigma_max, ratio, thresh)
-    # cy = indices[:, 0]
-    # cx = indices[:, 1]
-    # sig = indices[:, 2]
-    rad = sig.astype(float) * sqrt(2)
+    sigma_max = 50
+    ratio = 1.2394  # 15 total scales
+    thresh = 0.06
+    t1 = time.time()
+    # run blob detector function
+    (cy, cx, sig) = blob_detect(image, sigma_min, sigma_max, ratio, thresh)
+    rad = sig.astype(float) * sqrt(2)  # convert sigma value to radius r = sqrt(2)*sigma
+    t2 = time.time()
+    print('Total Blob Detection Time:')
+    print(t2-t1)
     plt.figure(1)
-    plt.imshow(image)
-    # new_image = np.pad(image, ((50, 50), (50, 50), (0, 0)), 'constant', constant_values=0)
+    plt.imshow(image, cmap='gray')
     ax = plt.gcf().gca()
+    # plot circles to mark blobs
     for center_y, center_x, radius in zip(cy, cx, rad):
         circle = plt.Circle((center_x, center_y), radius, color='r', fill=0)
         ax.add_artist(circle)
     plt.show()
-
-        # circy, circx = draw.circle_perimeter(center_y, center_x, radius)
-        # circy += 50
-        # circx += 50
-        # new_image[circy, circx, :] = (255, 255, 20)
-

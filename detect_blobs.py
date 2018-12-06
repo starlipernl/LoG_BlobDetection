@@ -1,8 +1,10 @@
 """""
-# Nathan Starliper
-# ECE 558 Final Project
+
+Nathan Starliper
+ECE 558 Final Project
 Scale invariant blob detection using LoG - This code detects SIFT blobs in a fast efficient manner using
 the laplacian of gaussian of an image pyramid to detect blobs at varying scales
+
 """
 
 from skimage import io, color, img_as_float, transform as tran
@@ -183,13 +185,19 @@ def max_filter(image, size):
 
 
 if __name__ == '__main__':
+    # prompt for filename and threshold
+    file = input("Please enter filename with extension:")
+    if not file:
+        file = 'butterfly.jpg'
+    thresh = input('Specify threshold value (no input defaults to 0.04):')
+    if not thresh:
+        thresh = 0.04
+    thresh = float(thresh)
     # load images and initialize parameters
-    file = 'butterfly.jpg'
     image = io.imread(file)
     sigma_min = 2
     sigma_max = 50
     ratio = 1.2394  # 15 total scales
-    thresh = 0.06
     t1 = time.time()
     # run blob detector function
     (cy, cx, sig) = blob_detect(image, sigma_min, sigma_max, ratio, thresh)
